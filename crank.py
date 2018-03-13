@@ -809,6 +809,87 @@ def read_psi_grad(psiout):
         raise Exception('%s has length zero' % psiout)
     return xyzs, elem, gxyzs, cbs
 
+def edit_tcin(fin=None, fout=None, options={}, defaults={}):
+    """
+    Parse, modify, and/or create a TeraChem input file.
+
+    Parameters
+    ----------
+    fin : str, optional
+        Name of the TeraChem input file to be read
+    fout : str, optional
+        Name of the TeraChem output file to be written, if desired
+    options : dict, optional
+        Dictionary of options to overrule TeraChem input file. Pass None as value to delete a key.
+    defaults : dict, optional
+        Dictionary of options to add to the end
+
+    Returns
+    -------
+    dictionary
+        Keys mapped to values as strings.  Certain keys will be changed to integers (e.g. charge, spinmult).
+        Keys are standardized to lowercase.
+    """
+    intkeys = ['charge', 'spinmult']
+    Answer = OrderedDict()
+    # Read from the input if provided
+    if fin is not None:
+        for line in open(fin).readlines():
+            line = line.split("#")[0].strip()
+            if len(line) == 0: continue
+            if line == 'end': break
+            s = line.split(' ', 1)
+            k = s[0].lower()
+            v = s[1].strip()
+            if k == 'coordinates':
+                if not os.path.exists(v.strip()):
+                    raise RuntimeError("TeraChem coordinate file does not exist")
+            if k in intkeys:
+                v = int(v)
+            if k in Answer:
+                raise RuntimeError("Found duplicate key in TeraChem input file: %s" % k)
+            Answer[k] = v
+    # Replace existing keys with ones from options
+    for k, v in options.items():
+        Answer[k] = v
+    # Append defaults to the end
+    for k, v in defaults.items():
+        if k not in Answer.keys():
+            Answer[k] = v
+    for k, v in Answer.items():
+        if v is None:
+            del Answer[k]
+    # Print to the output if provided
+    havekeys = []
+    if fout is not None:
+        with open(fout, 'w') as f:
+            # If input file is provided, try to preserve the formatting
+            if fin is not None:
+                for line in open(fin).readlines():
+                    # Find if the line contains a key
+                    haveKey = False
+                    uncomm = line.split("#", 1)[0].strip()
+                    # Don't keep anything past the 'end' keyword
+                    if uncomm.lower() == 'end': break
+                    if len(uncomm) > 0:
+                        haveKey = True
+                        comm = line.split("#", 1)[1].replace('\n','') if len(line.split("#", 1)) == 2 else ''
+                        s = line.split(' ', 1)
+                        w = re.findall('[ ]+',uncomm)[0]
+                        k = s[0].lower()
+                        if k in Answer:
+                            line_out = k + w + str(Answer[k]) + comm
+                            havekeys.append(k)
+                        else:
+                            line_out = line.replace('\n', '')
+                    else:
+                        line_out = line.replace('\n', '')
+                    print >> f, line_out
+            for k, v in Answer.items():
+                if k not in havekeys:
+                    print >> f, "%-15s %s" % (k, str(v))
+    return Answer
+
 class DihedralGrid(object):
     """
     Class which represents a two-dimensional grid of dihedral angles for a molecule.
@@ -1036,7 +1117,7 @@ class DihedralGrid(object):
                             self.stordir.append(dnm)
                             return dih12, dnm
                     except: pass
-            if self.engine == "qchem":
+            elif self.engine == "qchem":
                 if dnm not in self.stordir and all([os.path.exists(os.path.join(dnm,i)) for i in ["energy.txt", "opt.xyz"]]):
                     try:
                         M2 = Molecule(os.path.join(dnm,"opt.xyz"), build_topology=False)
@@ -1054,7 +1135,7 @@ class DihedralGrid(object):
                             self.stordir.append(dnm)
                             return dih12, dnm
                     except: pass
-            if self.engine == "psi4": #JS basically read output like qchem is doing
+            elif self.engine == "psi4": #JS basically read output like qchem is doing
                 if dnm not in self.stordir and all([os.path.exists(os.path.join(dnm,i)) for i in ["energy.txt", "opt.xyz"]]):
                     try:
                         M2 = Molecule(os.path.join(dnm,"opt.xyz"), build_topology=False)
@@ -1065,6 +1146,25 @@ class DihedralGrid(object):
                             self.stordir.append(dnm)
                             return dih12, dnm
                         M1 = Molecule(os.path.join(dnm,"psi4.dat"), ftype="psiin", build_topology=False)
+                        max1 = abs(M1.xyzs[0] - M0.xyzs[0]).max()
+                        if max1 < 0.01:
+                            E = 627.51*float(np.loadtxt(os.path.join(dnm,"energy.txt")))
+                            print "\rFound: %12s -> %12s" % (dih120, dih12),
+                            self.stordir.append(dnm)
+                            return dih12, dnm
+                    except: pass
+            elif self.engine == "terachem":
+                #print "Hello", dnm, self.engine, self.stordir, os.path.exists(os.path.join(dnm,"energy.txt")), os.path.exists(os.path.join(dnm,"opt.xyz"))
+                if dnm not in self.stordir and all([os.path.exists(os.path.join(dnm,i)) for i in ["energy.txt", "opt.xyz"]]):
+                    try:
+                        M2 = Molecule(os.path.join(dnm,"opt.xyz"), build_topology=False)
+                        max2 = abs(M2.xyzs[0] - M0.xyzs[0]).max()
+                        if max2 < 0.01:
+                            E = 627.51*float(np.loadtxt(os.path.join(dnm,"energy.txt")))
+                            print "\rFound: %12s -> %12s" % (dih120, dih12),
+                            self.stordir.append(dnm)
+                            return dih12, dnm
+                        M1 = Molecule(os.path.join(dnm,"start.xyz"))
                         max1 = abs(M1.xyzs[0] - M0.xyzs[0]).max()
                         if max1 < 0.01:
                             E = 627.51*float(np.loadtxt(os.path.join(dnm,"energy.txt")))
@@ -1146,7 +1246,6 @@ class DihedralGrid(object):
                                         dih1=dih1, dih2=dih2)
             Q = deepcopy(M0)
             Q.write(os.path.join(dnm, 'start.xyz'))
-            from engine import edit_tcin
             edit_tcin(fin=self.tcin, fout=os.path.join(dnm, "tera.in"), options={'coordinates':'start.xyz'})
             #Q.add_quantum(os.path.join(dnm,'psi4.dat'))
             #Q.write(os.path.join(dnm,'psi4.dat'), ftype="psiin")
@@ -1445,7 +1544,6 @@ def main():
     parser.add_argument('--charge', type=int, default=0,  action='store', help='Define the charge of the system')
     args = parser.parse_args()
     if args.tcin is not "None":
-        from engine import edit_tcin
         tcin_dict = edit_tcin(args.tcin)
         method = tcin_dict['method']+'_'+tcin_dict['basis']
         charge = tcin_dict['charge']
